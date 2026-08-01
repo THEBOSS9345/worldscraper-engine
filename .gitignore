@@ -1,0 +1,23 @@
+# Build output
+dist-portable/
+app/dist/
+app/src-tauri/target/
+app/src-tauri/gen/schemas/
+
+# Dependencies
+app/node_modules/
+
+# Compiled binaries
+*.exe
+*.dll
+*.pdb
+
+# Engine runtime data
+engine/data/
+*.log
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
