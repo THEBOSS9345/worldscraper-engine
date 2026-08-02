@@ -13,6 +13,7 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
         "title": "WorldScraper",
         "width": 1520,
         "height": 950,

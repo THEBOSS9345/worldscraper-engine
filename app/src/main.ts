@@ -202,6 +202,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
       <span class="pill"><span class="dot" id="engine-dot"></span><span id="engine-state">connecting…</span></span>
       <span class="pill" id="pill-rate">— pages/s</span>
       <span class="pill" id="pill-indexed">— indexed</span>
+      <span class="pill pill--storage" id="pill-storage">— GB</span>
       <div class="topbar__spacer"></div>
       <button class="btn btn--ghost" id="btn-pause">Pause</button>
       <span class="pill" id="pill-clock">--:--:--</span>
@@ -254,6 +255,14 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="chart" style="height:70px"><canvas id="chart-spark"></canvas></div>
           </div>
 
+          <div class="panel c12">
+            <div class="panel__head">
+              <span class="panel__title">Live feed</span>
+              <span class="panel__note" id="feed-note">—</span>
+            </div>
+            <div class="feed" id="feed"></div>
+          </div>
+
           <div class="panel c4">
             <div class="panel__head"><span class="panel__title">Content categories</span></div>
             <div class="ranks" id="ranks-categories"></div>
@@ -269,7 +278,7 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="ranks" id="ranks-langs"></div>
           </div>
 
-          <div class="panel c4">
+          <div class="panel c5">
             <div class="panel__head">
               <span class="panel__title">Server countries</span>
               <span class="panel__note" id="geo-note">—</span>
@@ -277,20 +286,12 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
             <div class="ranks" id="ranks-countries"></div>
           </div>
 
-          <div class="panel c5">
+          <div class="panel c7">
             <div class="panel__head">
               <span class="panel__title">Most-crawled hosts</span>
               <span class="panel__note">click to search</span>
             </div>
             <div class="ranks" id="ranks-hosts"></div>
-          </div>
-
-          <div class="panel c7">
-            <div class="panel__head">
-              <span class="panel__title">Live feed</span>
-              <span class="panel__note" id="feed-note">—</span>
-            </div>
-            <div class="feed" id="feed"></div>
           </div>
         </div>
       </section>
@@ -453,6 +454,23 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <span class="field__hint">Finished pages return to the queue after this long, which is what keeps the crawl running indefinitely.</span>
               </div>
               <div class="field">
+                <label class="field__label" for="cfg-daily-cap">Per-host daily cap</label>
+                <input id="cfg-daily-cap" type="number" min="0" />
+                <span class="field__hint">Maximum fetches one host may consume per day (0 = unlimited). Keeps a single huge site from starving the rest of the frontier.</span>
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-prune">Prune index older than (days)</label>
+                <input id="cfg-prune" type="number" min="0" />
+                <span class="field__hint">Search results older than this are removed on the next ingest cycle (0 = keep everything).</span>
+              </div>
+              <div class="field">
+                <label class="switch">
+                  <input type="checkbox" id="cfg-dedup" /><span class="switch__track"></span>
+                  <span class="field__label">Suppress near-duplicate pages</span>
+                </label>
+                <span class="field__hint">When a fetched page is a near-copy of one already indexed (syndication, mirrors), the search index keeps only the first copy. The page itself is still crawled and its links followed.</span>
+              </div>
+              <div class="field">
                 <label class="field__label" for="cfg-ua">User agent</label>
                 <input id="cfg-ua" type="text" />
               </div>
@@ -504,8 +522,53 @@ document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
                 <textarea id="cfg-disc-sources" placeholder="https://example.com/feed.xml&#10;https://blog.example.com"></textarea>
                 <span class="field__hint">One per line: RSS/Atom feeds, OPML files, or plain lists of URLs (TXT/CSV). Each is read for links to enqueue.</span>
               </div>
+              <div class="field">
+                <label class="switch">
+                  <input type="checkbox" id="cfg-sitemap" /><span class="switch__track"></span>
+                  <span class="field__label">Discover via sitemaps</span>
+                </label>
+                <span class="field__hint">Fetches each top host's robots.txt, follows its Sitemap: entries, and enqueues the pages listed there.</span>
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-sitemap-hosts">Sitemap hosts per cycle</label>
+                <input id="cfg-sitemap-hosts" type="number" min="0" max="1000" />
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-sitemap-cap">Sitemap fetches per cycle (max)</label>
+                <input id="cfg-sitemap-cap" type="number" min="0" max="5000" />
+              </div>
+
+              <div class="panel__head" style="margin:24px 0 12px"><span class="panel__title">Notifications</span></div>
+              <div class="field">
+                <label class="switch">
+                  <input type="checkbox" id="cfg-notify" /><span class="switch__track"></span>
+                  <span class="field__label">Send alerts</span>
+                </label>
+                <span class="field__hint">Posts JSON alerts when the crawl stalls, the error rate spikes, or disk usage crosses the threshold below.</span>
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-notify-webhook">Webhook URL</label>
+                <input id="cfg-notify-webhook" type="text" placeholder="https://example.com/hooks/crawl" />
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-notify-discord">Discord webhook URL</label>
+                <input id="cfg-notify-discord" type="text" placeholder="https://discord.com/api/webhooks/..." />
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-notify-tg-bot">Telegram bot token</label>
+                <input id="cfg-notify-tg-bot" type="text" placeholder="123456:ABC-DEF..." />
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-notify-tg-chat">Telegram chat id</label>
+                <input id="cfg-notify-tg-chat" type="text" placeholder="-1001234567890" />
+              </div>
+              <div class="field">
+                <label class="field__label" for="cfg-notify-disk">Disk alert above (MB)</label>
+                <input id="cfg-notify-disk" type="number" min="0" />
+              </div>
               <div class="field__row">
                 <button class="btn" id="btn-save-config">Save configuration</button>
+                <button class="btn" id="btn-test-notify">Send test alert</button>
                 <button class="btn btn--danger" id="btn-stop">Stop crawler</button>
               </div>
             </div>
@@ -607,7 +670,7 @@ function renderTiles(): void {
   const totals = agg.totals ?? {};
 
   const values: Record<string, [string, string]> = {
-    pages: [compactNumber(totals.pages ?? 0), `${compactNumber(totals.links ?? 0)} links found`],
+    pages: [compactNumber(totals.pages ?? 0), `${compactNumber(rates.deduped ?? 0)} near-dup suppressed`],
     indexed: [compactNumber(idxStats?.docs ?? 0), `${idxStats?.segments ?? 0} segments`],
     hosts: [compactNumber(agg.hostCount ?? 0), `${status.hostsLive} active now`],
     rate: [rates.pagesPerSec.toFixed(1), "pages / second"],
@@ -807,7 +870,9 @@ function renderTopbar(): void {
   const { rates, status } = latest;
   $("#pill-rate").textContent = `${rates.pagesPerSec.toFixed(1)} pages/s · ${rates.inflight} in flight`;
   $("#pill-indexed").textContent = `${compactNumber(idxStats?.docs ?? 0)} indexed`;
-  $("#globe-note").textContent = `${status.hostsLive} hosts active`;
+  const total = latest.storage?.totalBytes ?? 0;
+  $("#pill-storage").textContent = `${(total / 1e9).toFixed(1)} GB used`;
+  $("#globe-note").textContent = `${status.hostsLive} hosts active · drag to move · scroll to zoom · double-click to reset`;
 
   const btn = $<HTMLButtonElement>("#btn-pause");
   btn.textContent = status.paused ? "Resume" : "Pause";
@@ -1086,8 +1151,9 @@ function renderControlStats(): void {
     { label: `Engine heap — ${frontier.heapMb.toFixed(0)} MB`, n: Math.round(frontier.heapMb) },
     { label: `Engine RSS — ${frontier.rssMb.toFixed(0)} MB`, n: Math.round(frontier.rssMb) },
     { label: `Frontier on disk — ${formatBytes(frontier.diskBytes)}`, n: frontier.diskBytes },
+    { label: `Total data on disk — ${formatBytes(latest.storage?.totalBytes ?? frontier.diskBytes)}`, n: latest.storage?.totalBytes ?? frontier.diskBytes },
     { label: `Sites discovered — ${status.discovered.toLocaleString()}`, n: status.discovered },
-  ], { max: 7 });
+  ], { max: 8 });
 }
 
 /** Runs a control action with consistent feedback and button locking. */
@@ -1226,6 +1292,9 @@ async function loadSettings(): Promise<void> {
     $<HTMLInputElement>("#cfg-delay").value = String(config.perHostDelayMs);
     $<HTMLInputElement>("#cfg-depth").value = String(config.maxDepth);
     $<HTMLInputElement>("#cfg-recrawl").value = String(config.recrawlAfterHours);
+    $<HTMLInputElement>("#cfg-daily-cap").value = String(config.perHostDailyCap);
+    $<HTMLInputElement>("#cfg-prune").value = String(config.pruneOlderThanDays);
+    $<HTMLInputElement>("#cfg-dedup").checked = config.dedupNearDuplicates;
     $<HTMLInputElement>("#cfg-ua").value = config.userAgent;
     $<HTMLInputElement>("#cfg-robots").checked = config.respectRobots;
     $<HTMLInputElement>("#cfg-adult").checked = config.crawlAdult;
@@ -1234,6 +1303,15 @@ async function loadSettings(): Promise<void> {
     $<HTMLInputElement>("#cfg-disc-interval").value = String(config.discoveryIntervalMin);
     $<HTMLInputElement>("#cfg-disc-cap").value = String(config.discoveryMaxPerCycle);
     $<HTMLTextAreaElement>("#cfg-disc-sources").value = (config.discoverySources ?? []).join("\n");
+    $<HTMLInputElement>("#cfg-sitemap").checked = config.discoverySitemapEnabled;
+    $<HTMLInputElement>("#cfg-sitemap-hosts").value = String(config.discoverySitemapHosts);
+    $<HTMLInputElement>("#cfg-sitemap-cap").value = String(config.discoveryMaxSitemapFetches);
+    $<HTMLInputElement>("#cfg-notify").checked = config.notifyEnabled;
+    $<HTMLInputElement>("#cfg-notify-webhook").value = config.notifyWebhook;
+    $<HTMLInputElement>("#cfg-notify-discord").value = config.notifyDiscord;
+    $<HTMLInputElement>("#cfg-notify-tg-bot").value = config.notifyTelegramBot;
+    $<HTMLInputElement>("#cfg-notify-tg-chat").value = config.notifyTelegramChat;
+    $<HTMLInputElement>("#cfg-notify-disk").value = String(config.notifyDiskThresholdMb);
   } catch (err) {
     toast(`Could not load configuration: ${err}`, true);
   }
@@ -1248,11 +1326,24 @@ async function loadSettings(): Promise<void> {
     /* log panel is best-effort */
   }
 
-  const frontierBytes = latest?.frontier.diskBytes ?? 0;
-  const indexBytes = idxStats?.diskBytes ?? 0;
+  try {
+    latest = await getStats();
+  } catch {
+    /* the live feed keeps the snapshot fresh anyway */
+  }
+
+  const st = latest?.storage;
+  const frontierBytes = st?.frontierBytes ?? latest?.frontier.diskBytes ?? 0;
+  const indexBytes = st?.indexBytes ?? idxStats?.diskBytes ?? 0;
+  const metaBytes = st?.metaBytes ?? 0;
+  const geoBytes = st?.geoBytes ?? 0;
+  const totalBytes = st?.totalBytes ?? frontierBytes + indexBytes + metaBytes + geoBytes;
   renderRanks("#storage", [
     { label: `Frontier store (Pebble) — ${formatBytes(frontierBytes)}`, n: frontierBytes },
     { label: `Search index (Tantivy) — ${formatBytes(indexBytes)}`, n: indexBytes },
+    { label: `Database (meta.db) — ${formatBytes(metaBytes)}`, n: metaBytes },
+    { label: `Geo database — ${formatBytes(geoBytes)}`, n: geoBytes },
+    { label: `Total on disk — ${formatBytes(totalBytes)}`, n: totalBytes },
   ]);
 }
 
@@ -1263,6 +1354,9 @@ $("#btn-save-config").addEventListener("click", async () => {
       perHostDelayMs: Number($<HTMLInputElement>("#cfg-delay").value),
       maxDepth: Number($<HTMLInputElement>("#cfg-depth").value),
       recrawlAfterHours: Number($<HTMLInputElement>("#cfg-recrawl").value),
+      perHostDailyCap: Number($<HTMLInputElement>("#cfg-daily-cap").value),
+      pruneOlderThanDays: Number($<HTMLInputElement>("#cfg-prune").value),
+      dedupNearDuplicates: $<HTMLInputElement>("#cfg-dedup").checked,
       userAgent: $<HTMLInputElement>("#cfg-ua").value,
       respectRobots: $<HTMLInputElement>("#cfg-robots").checked,
       crawlAdult: $<HTMLInputElement>("#cfg-adult").checked,
@@ -1274,11 +1368,29 @@ $("#btn-save-config").addEventListener("click", async () => {
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter(Boolean),
+      discoverySitemapEnabled: $<HTMLInputElement>("#cfg-sitemap").checked,
+      discoverySitemapHosts: Number($<HTMLInputElement>("#cfg-sitemap-hosts").value),
+      discoveryMaxSitemapFetches: Number($<HTMLInputElement>("#cfg-sitemap-cap").value),
+      notifyEnabled: $<HTMLInputElement>("#cfg-notify").checked,
+      notifyWebhook: $<HTMLInputElement>("#cfg-notify-webhook").value,
+      notifyDiscord: $<HTMLInputElement>("#cfg-notify-discord").value,
+      notifyTelegramBot: $<HTMLInputElement>("#cfg-notify-tg-bot").value,
+      notifyTelegramChat: $<HTMLInputElement>("#cfg-notify-tg-chat").value,
+      notifyDiskThresholdMb: Number($<HTMLInputElement>("#cfg-notify-disk").value),
     };
     config = await setConfig(patch);
     toast("Configuration saved");
   } catch (err) {
     toast(`Save failed: ${err}`, true);
+  }
+});
+
+$("#btn-test-notify").addEventListener("click", async () => {
+  try {
+    await control("notifyTest");
+    toast("Test alert sent to configured endpoints");
+  } catch (err) {
+    toast(`Test alert failed: ${err}`, true);
   }
 });
 

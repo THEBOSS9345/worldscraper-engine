@@ -5,6 +5,9 @@
  * installed the position is the server's actual location; without one the host
  * name is hashed to a stable point and the panel says the positions are
  * approximate.
+ *
+ * The globe is interactive: drag to spin and tilt it, scroll to zoom, hover a
+ * ping to see which server it is, and double-click to reset the view.
  */
 
 import { CONTINENTS, ISLANDS, type Ring } from "./land";
@@ -17,9 +20,17 @@ const MAX_ARCS = 16;
 const PING_LIFE = 2400;
 const ARC_LIFE = 1500;
 
+const BASE_TILT = -0.36;
+const TILT_MIN = -1.2;
+const TILT_MAX = 1.2;
+const ZOOM_MIN = 0.6;
+const ZOOM_MAX = 2.5;
+const HOVER_RADIUS = 14;
+
 interface Ping {
   lat: number;
   lon: number;
+  host: string;
   born: number;
   ok: boolean;
 }
@@ -36,10 +47,22 @@ interface Projected {
   z: number;
 }
 
+interface HoverTarget {
+  x: number;
+  y: number;
+  host: string;
+  lat: number;
+  lon: number;
+  ok: boolean;
+}
+
 export class Globe {
   private ctx: CanvasRenderingContext2D;
   private raf = 0;
   private rotation = 0;
+  private tilt = BASE_TILT;
+  private zoom = 1;
+  private baseR = 0;
   private pings: Ping[] = [];
   private arcs: Arc[] = [];
   private w = 0;
@@ -52,12 +75,83 @@ export class Globe {
   private lastFrame = 0;
   private stars: HTMLCanvasElement | null = null;
 
+  // Interaction state: the globe stops auto-rotating once the user touches it
+  // (spinning is useless when you are trying to read server locations).
+  private freeze = false;
+  private dragging = false;
+  private dragId = -1;
+  private dragStart = { x: 0, y: 0 };
+  private dragRot = 0;
+  private dragTilt = BASE_TILT;
+  private pointer: { x: number; y: number } | null = null;
+
   constructor(private canvas: HTMLCanvasElement) {
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("2d canvas context unavailable");
     this.ctx = ctx;
     this.reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     this.resize();
+    this.wire();
+  }
+
+  private wire(): void {
+    const c = this.canvas;
+    c.style.cursor = "grab";
+    c.style.touchAction = "none";
+
+    c.addEventListener("pointerdown", (e) => {
+      this.dragging = true;
+      this.dragId = e.pointerId;
+      this.dragStart = { x: e.clientX, y: e.clientY };
+      this.dragRot = this.rotation;
+      this.dragTilt = this.tilt;
+      this.pointer = this.toLocal(e);
+      c.setPointerCapture(e.pointerId);
+      c.style.cursor = "grabbing";
+    });
+
+    c.addEventListener("pointermove", (e) => {
+      this.pointer = this.toLocal(e);
+      if (this.dragging && e.pointerId === this.dragId) {
+        const dx = e.clientX - this.dragStart.x;
+        const dy = e.clientY - this.dragStart.y;
+        this.rotation = this.dragRot + dx * 0.006;
+        this.tilt = clamp(this.dragTilt - dy * 0.004, TILT_MIN, TILT_MAX);
+      }
+    });
+
+    const endDrag = (e: PointerEvent) => {
+      if (e.pointerId !== this.dragId) return;
+      this.dragging = false;
+      this.dragId = -1;
+      this.freeze = true;
+      c.style.cursor = "grab";
+      if (c.hasPointerCapture(e.pointerId)) c.releasePointerCapture(e.pointerId);
+    };
+    c.addEventListener("pointerup", endDrag);
+    c.addEventListener("pointercancel", endDrag);
+    c.addEventListener("pointerleave", () => {
+      this.pointer = null;
+    });
+
+    c.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      this.freeze = true;
+      this.zoom = clamp(this.zoom * Math.exp(-e.deltaY * 0.001), ZOOM_MIN, ZOOM_MAX);
+    }, { passive: false });
+
+    c.addEventListener("dblclick", () => {
+      this.rotation = 0;
+      this.tilt = BASE_TILT;
+      this.zoom = 1;
+      this.freeze = false;
+      this.pointer = null;
+    });
+  }
+
+  private toLocal(e: PointerEvent | WheelEvent): { x: number; y: number } {
+    const rect = this.canvas.getBoundingClientRect();
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
   }
 
   resize(): void {
@@ -71,7 +165,8 @@ export class Globe {
 
     this.cx = this.w / 2;
     this.cy = this.h / 2;
-    this.r = Math.min(this.w, this.h) * 0.42;
+    this.baseR = Math.min(this.w, this.h) * 0.42;
+    this.r = this.baseR * this.zoom;
     this.stars = this.makeStars();
   }
 
@@ -83,7 +178,7 @@ export class Globe {
     if (this.pings.length >= MAX_PINGS) {
       this.pings.splice(0, this.pings.length - MAX_PINGS + 1);
     }
-    this.pings.push({ lat, lon, born: now, ok });
+    this.pings.push({ lat, lon, host, born: now, ok });
 
     if (ok && this.arcs.length < MAX_ARCS && Math.random() < 0.35) {
       const prev = this.pings[this.pings.length - 2];
@@ -112,7 +207,9 @@ export class Globe {
 
       const dt = Math.min(elapsed, 100);
       this.lastFrame = t;
-      if (!this.reduced) this.rotation += dt * 0.00004 * TAU;
+      if (!this.reduced && !this.freeze && !this.dragging) {
+        this.rotation += dt * 0.00004 * TAU;
+      }
       this.draw(t);
     };
     this.raf = requestAnimationFrame(loop);
@@ -135,9 +232,8 @@ export class Globe {
     const z = Math.cos(phi) * Math.cos(theta);
 
     // A slight axial tilt reads as a globe rather than a spinning disc.
-    const tilt = -0.36;
-    const y2 = y * Math.cos(tilt) - z * Math.sin(tilt);
-    const z2 = y * Math.sin(tilt) + z * Math.cos(tilt);
+    const y2 = y * Math.cos(this.tilt) - z * Math.sin(this.tilt);
+    const z2 = y * Math.sin(this.tilt) + z * Math.cos(this.tilt);
 
     return { x: this.cx + x * this.r, y: this.cy - y2 * this.r, z: z2 };
   }
@@ -181,6 +277,9 @@ export class Globe {
     this.drawArcs(t);
     this.drawPings(t);
 
+    const hover = this.hoverTarget();
+    if (hover) this.drawHoverRing(hover);
+
     ctx.restore();
 
     // Rim.
@@ -189,6 +288,8 @@ export class Globe {
     ctx.beginPath();
     ctx.arc(this.cx, this.cy, this.r, 0, TAU);
     ctx.stroke();
+
+    if (hover) this.drawHoverLabel(hover);
   }
 
   private drawAtmosphere(): void {
@@ -381,6 +482,75 @@ export class Globe {
     }
   }
 
+  // ------------------------------------------------------------ interaction --
+
+  /** Nearest visible ping under the pointer, if any. */
+  private hoverTarget(): HoverTarget | null {
+    if (!this.pointer) return null;
+
+    let best: { d: number; x: number; y: number; ping: Ping } | null = null;
+    for (const ping of this.pings) {
+      const p = this.project(ping.lat, ping.lon);
+      if (p.z < 0) continue;
+      const d = Math.hypot(p.x - this.pointer.x, p.y - this.pointer.y);
+      if (d <= HOVER_RADIUS && (!best || d < best.d)) {
+        best = { d, x: p.x, y: p.y, ping };
+      }
+    }
+    if (!best) return null;
+    return {
+      x: best.x,
+      y: best.y,
+      host: best.ping.host,
+      lat: best.ping.lat,
+      lon: best.ping.lon,
+      ok: best.ping.ok,
+    };
+  }
+
+  private drawHoverRing(h: HoverTarget): void {
+    const ctx = this.ctx;
+    const rgb = h.ok ? "125, 240, 150" : "255, 125, 146";
+    ctx.strokeStyle = `rgba(${rgb}, 0.9)`;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(h.x, h.y, 9, 0, TAU);
+    ctx.stroke();
+  }
+
+  private drawHoverLabel(h: HoverTarget): void {
+    const ctx = this.ctx;
+    const lines = [
+      h.host,
+      `${h.lat.toFixed(1)}°, ${h.lon.toFixed(1)}°`,
+    ];
+    const font = "11px ui-monospace, SFMono-Regular, Consolas, monospace";
+    ctx.font = font;
+    const pad = 6;
+    const lineH = 15;
+    const labelW = Math.max(...lines.map((l) => ctx.measureText(l).width)) + pad * 2;
+    const labelH = lines.length * lineH + pad * 2;
+
+    let x = h.x + 12;
+    let y = h.y - labelH / 2;
+    if (x + labelW > this.w - 4) x = h.x - 12 - labelW;
+    if (y < 4) y = 4;
+    if (y + labelH > this.h - 4) y = this.h - 4 - labelH;
+
+    ctx.fillStyle = "rgba(4, 12, 22, 0.92)";
+    ctx.strokeStyle = "rgba(130, 235, 255, 0.6)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.roundRect(x, y, labelW, labelH, 5);
+    ctx.fill();
+    ctx.stroke();
+
+    ctx.fillStyle = h.ok ? "#8af0a3" : "#ff8aa0";
+    lines.forEach((line, i) => {
+      ctx.fillText(line, x + pad, y + pad + lineH * (i + 1) - 4);
+    });
+  }
+
   /** Renders the star field once; it never changes between resizes. */
   private makeStars(): HTMLCanvasElement | null {
     const c = document.createElement("canvas");
@@ -404,6 +574,10 @@ export class Globe {
     }
     return c;
   }
+}
+
+function clamp(v: number, lo: number, hi: number): number {
+  return v < lo ? lo : v > hi ? hi : v;
 }
 
 /**

@@ -33,14 +33,44 @@ type Config struct {
 	RecrawlAfterHours int `json:"recrawlAfterHours"` // re-queue pages older than this
 	ReseedWhenDry     bool `json:"reseedWhenDry"`    // re-inject seed list if frontier empties
 
+	// Per-domain budget: hosts that exceed their daily cap stop feeding new
+	// work (harvested links, discovery, recrawls) until the day rolls over, so
+	// one giant site cannot eat the whole queue.
+	PerHostDailyCap int `json:"perHostDailyCap"` // max fetches per host per day; 0 = unlimited
+
+	// Storage pruning: search-index documents older than this many days are
+	// deleted (0 = keep everything). Applied automatically by the indexer.
+	PruneOlderThanDays int `json:"pruneOlderThanDays"`
+
+	// DedupNearDuplicates suppresses syndicated copies of an already-indexed
+	// page by comparing a SimHash fingerprint recorded when the page was last
+	// fetched. Copies still get crawled (harvesting their links); only the
+	// document handed to the search index is dropped.
+	DedupNearDuplicates bool `json:"dedupNearDuplicates"`
+
 	// Autonomous discovery: polls external sources so the crawl keeps meeting
 	// websites it has never seen instead of cycling over the same reachable
 	// set. Sources are Wikipedia random articles, the daily Tranco top-domain
 	// list, and any extra RSS/OPML/TXT feeds in DiscoverySources.
-	DiscoveryEnabled     bool     `json:"discoveryEnabled"`     // poll sources on a timer
-	DiscoveryIntervalMin int      `json:"discoveryIntervalMin"` // minutes between source polls
-	DiscoveryMaxPerCycle int      `json:"discoveryMaxPerCycle"` // cap on URLs injected per cycle
-	DiscoverySources     []string `json:"discoverySources"`     // extra feed/CSV URLs, one per entry
+	DiscoveryEnabled          bool     `json:"discoveryEnabled"`           // poll sources on a timer
+	DiscoveryIntervalMin      int      `json:"discoveryIntervalMin"`       // minutes between source polls
+	DiscoveryMaxPerCycle      int      `json:"discoveryMaxPerCycle"`       // cap on URLs injected per cycle
+	DiscoverySources          []string `json:"discoverySources"`           // extra feed/CSV URLs, one per entry
+	DiscoverySitemapEnabled   bool     `json:"discoverySitemapEnabled"`    // scan top hosts' robots.txt for sitemaps
+	DiscoverySitemapHosts     int      `json:"discoverySitemapHosts"`      // how many top hosts to scan per cycle
+	DiscoveryMaxSitemapFetches int     `json:"discoveryMaxSitemapFetches"` // cap on sitemap URL fetches per cycle
+
+	// Notifications: alert the user (webhook, Discord, Telegram) when the
+	// crawl stalls, the error rate spikes, or disk usage crosses a threshold.
+	NotifyEnabled         bool   `json:"notifyEnabled"`
+	NotifyWebhook         string `json:"notifyWebhook"`       // generic JSON POST target
+	NotifyDiscord         string `json:"notifyDiscord"`       // Discord webhook URL
+	NotifyTelegramBot     string `json:"notifyTelegramBot"`   // Telegram bot token
+	NotifyTelegramChat    string `json:"notifyTelegramChat"`  // Telegram chat id
+	NotifyOnStall         bool   `json:"notifyOnStall"`       // no successful fetch for 10 minutes
+	NotifyOnErrors        bool   `json:"notifyOnErrors"`      // >50% of recent fetches failing
+	NotifyOnDisk          bool   `json:"notifyOnDisk"`        // data dir exceeds threshold
+	NotifyDiskThresholdMB int    `json:"notifyDiskThresholdMB"`
 
 	// Content policy
 	CrawlAdult bool `json:"crawlAdult"` // fetch hosts classified as adult
@@ -70,18 +100,32 @@ func Default() Config {
 		MaxLinksPerDoc:    150,
 		RequestTimeoutMS:  15000,
 		MaxPageBytes:      3 << 20, // 3 MiB
-		UserAgent:         "WorldScraperBot/0.1 (+https://github.com/worldscraper; desktop research crawler)",
+		// A current, real browser UA: sites that hard-block non-browser
+		// fingerprints otherwise 403 before robots.txt is ever consulted.
+		UserAgent:         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
 		RespectRobots:     true,
 		FollowRedirects:   5,
-		InsecureTLS:       true,
+		InsecureTLS:       false,
 		RecrawlAfterHours: 24 * 14,
 		ReseedWhenDry:     true,
-		DiscoveryEnabled:     true,
-		DiscoveryIntervalMin: 30,
-		DiscoveryMaxPerCycle: 500,
-		CrawlAdult:           true,
-		OnlyHTML:             true,
-		Paused:               false,
+		PerHostDailyCap:   5000,
+		PruneOlderThanDays: 0,
+		DedupNearDuplicates: true,
+		DiscoveryEnabled:             true,
+		DiscoveryIntervalMin:          30,
+		DiscoveryMaxPerCycle:          500,
+		DiscoverySitemapEnabled:       true,
+		DiscoverySitemapHosts:         50,
+		DiscoveryMaxSitemapFetches:    200,
+		NotifyWebhook:                 "",
+		NotifyEnabled:                 false,
+		NotifyOnStall:                 true,
+		NotifyOnErrors:                true,
+		NotifyOnDisk:                  true,
+		NotifyDiskThresholdMB:         20480,
+		CrawlAdult:                    true,
+		OnlyHTML:                      true,
+		Paused:                        false,
 	}
 }
 
@@ -96,6 +140,17 @@ func (c *Config) Sanitize() {
 	clampInt(&c.RecrawlAfterHours, 1, 24*365*5)
 	clampInt(&c.DiscoveryIntervalMin, 5, 1440)
 	clampInt(&c.DiscoveryMaxPerCycle, 10, 10000)
+	clampInt(&c.PerHostDailyCap, 0, 1000000)
+	if c.PruneOlderThanDays < 0 {
+		c.PruneOlderThanDays = 0
+	}
+	clampInt(&c.DiscoverySitemapHosts, 0, 1000)
+	clampInt(&c.DiscoveryMaxSitemapFetches, 0, 5000)
+	clampInt(&c.NotifyDiskThresholdMB, 0, 1024*1024)
+	c.NotifyWebhook = strings.TrimSpace(c.NotifyWebhook)
+	c.NotifyDiscord = strings.TrimSpace(c.NotifyDiscord)
+	c.NotifyTelegramBot = strings.TrimSpace(c.NotifyTelegramBot)
+	c.NotifyTelegramChat = strings.TrimSpace(c.NotifyTelegramChat)
 	kept := c.DiscoverySources[:0]
 	for _, s := range c.DiscoverySources {
 		s = strings.TrimSpace(s)

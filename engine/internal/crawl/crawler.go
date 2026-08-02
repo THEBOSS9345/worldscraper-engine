@@ -15,6 +15,7 @@ package crawl
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"net/url"
 	"runtime"
 	"runtime/debug"
@@ -33,6 +34,7 @@ import (
 	"worldscraper/engine/internal/meta"
 	"worldscraper/engine/internal/metrics"
 	"worldscraper/engine/internal/robots"
+	"worldscraper/engine/internal/simhash"
 	"worldscraper/engine/internal/urlx"
 )
 
@@ -85,6 +87,7 @@ type result struct {
 	bytes    int64
 	ok       bool
 	links    int
+	deduped  bool
 }
 
 // Crawler owns the running crawl.
@@ -534,7 +537,8 @@ func (c *Crawler) shouldSkip(cfg *config.Config, e *hostEntry, rawURL string) (b
 }
 
 // hostDelay is the politeness gap: the larger of the configured delay and any
-// Crawl-delay the host published.
+// Crawl-delay the host published, humanized with randomized jitter so traffic
+// never reads as a fixed-metronome bot.
 func (c *Crawler) hostDelay(cfg *config.Config, e *hostEntry) time.Duration {
 	d := time.Duration(cfg.PerHostDelayMS) * time.Millisecond
 	if e.rules != nil && e.rules.CrawlDelay > d {
@@ -546,6 +550,10 @@ func (c *Crawler) hostDelay(cfg *config.Config, e *hostEntry) time.Duration {
 		if backoff > d {
 			d = backoff
 		}
+	}
+	if d > 0 {
+		// Add 0..75% extra, never less than the polite minimum.
+		d += time.Duration(rand.Int63n(int64(d)*3/4 + 1))
 	}
 	return d
 }
@@ -756,6 +764,9 @@ func (c *Crawler) fetchPage(ctx context.Context, j job) result {
 			Title: doc.Title, Description: doc.Description, Body: doc.Text,
 			Lang: doc.Lang, Category: cat, Status: resp.Status,
 			Bytes: resp.Bytes, Depth: item.Depth, FetchedAt: now.Unix(),
+			// Near-duplicate fingerprint: identical or lightly-rewritten pages
+			// share a fingerprint so the indexer can keep just one copy.
+			Fp: simhash.Fingerprint(doc.Title + "\n" + doc.Description + "\n" + doc.Text),
 		}
 	}
 
@@ -852,8 +863,25 @@ func (c *Crawler) persist(batch []result) {
 	now := time.Now().Unix()
 	delta.Minute = now - now%60
 
+	dedup := c.cfg.Load().DedupNearDuplicates
+
 	for i := range batch {
 		r := &batch[i]
+
+		// Near-duplicate suppression: if the page's SimHash fingerprint is too
+		// close to one already indexed, drop the document (but keep its links
+		// and aggregates) so syndicated copies don't pollute the search index.
+		if dedup && r.comp.Doc != nil && r.comp.Doc.Fp != 0 {
+			dup, err := c.metadb.HasNearDuplicate(r.comp.Doc.URL, r.comp.Doc.Fp)
+			if err != nil {
+				logf("near-dup check %s: %v", r.comp.Doc.URL, err)
+			} else if dup {
+				r.comp.Doc = nil
+				r.deduped = true
+				c.met.AddDedup()
+			}
+		}
+
 		comps = append(comps, r.comp)
 
 		delta.Fetch++
@@ -884,6 +912,9 @@ func (c *Crawler) persist(batch []result) {
 		}
 		if r.status > 0 {
 			delta.Statuses[r.status]++
+		}
+		if !r.deduped && r.comp.Doc != nil && r.comp.Doc.Fp != 0 {
+			delta.Fingerprints[r.comp.Doc.URL] = r.comp.Doc.Fp
 		}
 		c.met.Record(r.ev)
 	}

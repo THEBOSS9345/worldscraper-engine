@@ -10,7 +10,9 @@ import "strings"
 // Categories is the canonical list, in dashboard display order.
 var Categories = []string{
 	"news", "docs", "academic", "code", "wiki", "social", "video",
-	"shopping", "forum", "gov", "blog", "adult", "other",
+	"shopping", "forum", "gov", "blog", "gaming", "finance", "health",
+	"sports", "food", "travel", "weather", "jobs", "music", "crypto",
+	"automotive", "adult", "other",
 }
 
 type rule struct {
@@ -62,7 +64,7 @@ var rules = []rule{
 	},
 	{
 		cat:      "social",
-		hostBits: []string{"facebook", "instagram", "twitter", "x.com", "linkedin", "pinterest", "snapchat", "threads.net", "mastodon", "bsky.app", "bluesky", "tumblr", "vk.com", "weibo", "telegram", "whatsapp", "discord"},
+		hostBits: []string{"facebook", "instagram", "twitter", "linkedin", "pinterest", "snapchat", "threads.net", "mastodon", "bsky.app", "bluesky", "tumblr", "vk.com", "weibo", "telegram", "whatsapp", "discord"},
 	},
 	{
 		cat:      "forum",
@@ -79,6 +81,72 @@ var rules = []rule{
 		hostBits: []string{"blog", "medium.com", "substack", "wordpress", "blogspot", "ghost.io", "dev.to", "hashnode", "svbtle", "write.as"},
 		pathBits: []string{"/blog/", "/posts/", "/post/"},
 	},
+	{
+		cat:      "gaming",
+		hostBits: []string{"steam", "steampowered", "roblox", "epicgames", "playstation", "nintendo", "xbox", "ign.com", "pcgamer", "gamerant", "gamefaqs", "gog.com", "itch.io", "battle.net", "ea.com", "ubisoft", "capcom", "squareenix", "sega.com", "genshin", "fortnite", "minecraft", "wowhead", "dota", "ggtracker"},
+		pathBits: []string{"/games/", "/game/", "/gaming/", "/walkthrough/", "/cheats/"},
+		textBits: []string{"video game", "gameplay", "gaming", "esports", "playstation", "xbox", "game review"},
+	},
+	{
+		cat:      "finance",
+		hostBits: []string{"investopedia", "morningstar", "fidelity", "vanguard", "robinhood", "etrade", "charlesschwab", "tradingview", "investing.com", "marketwatch", "seekingalpha", "bankrate", "nerdwallet", "creditkarma", "mint.com", "stripe.com", "paypal", "wise.com", "revolut", "zillow", "redfin", "realtor.com", "mortgage"},
+		pathBits: []string{"/stocks/", "/investing/", "/finance/", "/markets/", "/funds/", "/loans/"},
+		textBits: []string{"stock market", "interest rate", "personal finance", "investing", "mortgage rates", "retirement", "savings account", "credit score"},
+	},
+	{
+		cat:      "health",
+		hostBits: []string{"mayoclinic", "webmd", "healthline", "medlineplus", "who.int", "nhs.uk", "hopkinsmedicine", "clevelandclinic", "medicalnewstoday", "verywellhealth", "everydayhealth", "health.com", "medscape", "neurosciencenews", "psypost"},
+		pathBits: []string{"/health/", "/conditions/", "/symptoms/", "/medication/", "/wellness/"},
+		textBits: []string{"healthy", "medical", "symptoms", "treatment", "health care", "wellness", "nutrition", "mental health"},
+	},
+	{
+		cat:      "sports",
+		hostBits: []string{"espn", "foxsports", "nbcsports", "skysports", "bleacherreport", "sportingnews", "theathletic", "espncricinfo", "fifa.com", "uefa.com", "nba.com", "nfl.com", "mlb.com", "nhl.com", "ncaa", "premierleague", "laliga", "formula1", "f1.com", "motorsport", "cricket", "goal.com", "dazn", "sports.yahoo"},
+		pathBits: []string{"/sports/", "/football/", "/soccer/", "/matches/", "/fixtures/", "/scores/"},
+		textBits: []string{"sports", "football", "basketball", "soccer", "champions league", "world cup", "olympic", "match report", "scoreboard"},
+	},
+	{
+		cat:      "food",
+		hostBits: []string{"foodnetwork", "allrecipes", "seriouseats", "bonappetit", "epicurious", "delish", "tasty.co", "kitchenstories", "jamesbeard", "food52", "saveur", "tasteofhome", "foodandwine", "simplyrecipes"},
+		pathBits: []string{"/recipes/", "/recipe/", "/cooking/", "/kitchen/"},
+		textBits: []string{"recipe", "cooking", "baking", "ingredients", "cuisine", "meal prep"},
+	},
+	{
+		cat:      "travel",
+		hostBits: []string{"tripadvisor", "booking.com", "expedia", "kayak", "airbnb", "skyscanner", "lonelyplanet", "rome2rio", "hopper", "travelocity", "priceline", "orbitz", "hostelworld", "getyourguide", "viator", "trip.com"},
+		pathBits: []string{"/travel/", "/vacation/", "/itinerary/", "/flights/", "/hotels/"},
+		textBits: []string{"travel guide", "vacation", "flight deals", "hotel deals", "tourist", "itinerary", "trip planning"},
+	},
+	{
+		cat:      "weather",
+		hostBits: []string{"weather.com", "accuweather", "wunderground", "metoffice", "openweathermap", "windy.com", "foreca", "darksky"},
+		pathBits: []string{"/weather/", "/forecast/", "/radar/"},
+		textBits: []string{"weather forecast", "temperature", "humidity", "rain forecast", "storm", "hurricane", "climate"},
+	},
+	{
+		cat:      "jobs",
+		hostBits: []string{"indeed.com", "glassdoor", "monster.com", "careerbuilder", "ziprecruiter", "dice.com", "lever.co", "greenhouse.io", "workday", "jobvite", "jobs.com"},
+		pathBits: []string{"/jobs/", "/careers/", "/career/", "/vacancies/", "/openings/"},
+		textBits: []string{"job posting", "job openings", "hiring", "career opportunities", "resume", "salary"},
+	},
+	{
+		cat:      "music",
+		hostBits: []string{"spotify", "soundcloud", "pandora", "deezer", "bandcamp", "genius.com", "allmusic", "last.fm", "musicbrainz", "rollingstone.com", "billboard.com", "nme.com", "pitchfork"},
+		pathBits: []string{"/music/", "/artist/", "/album/", "/tracks/", "/lyrics/"},
+		textBits: []string{"album", "song", "lyrics", "concert", "playlist", "music"},
+	},
+	{
+		cat:      "crypto",
+		hostBits: []string{"coinbase", "binance", "coinmarketcap", "coingecko", "ethereum", "bitcoin", "blockchain.com", "cryptocurrency", "ledger.com", "trezor", "uniswap", "metamask", "opensea", "bitcoin.org", "crypto"},
+		pathBits: []string{"/crypto/", "/bitcoin/", "/ethereum/", "/nft/", "/wallets/", "/tokens/"},
+		textBits: []string{"cryptocurrency", "bitcoin", "ethereum", "blockchain", "nft", "defi", "web3", "token"},
+	},
+	{
+		cat:      "automotive",
+		hostBits: []string{"caranddriver", "autoblog", "motortrend", "topspeed", "jalopnik", "edmunds", "kbb.com", "cargurus", "autotrader", "tesla.com", "honda.com", "toyota.com", "bmw", "mercedes", "ford.com", "chevrolet", "nissan", "hyundai", "kia.com", "porsche", "ferrari", "lamborghini", "carfax"},
+		pathBits: []string{"/cars/", "/vehicles/", "/auto/", "/dealerships/"},
+		textBits: []string{"car review", "car buying", "fuel economy", "horsepower", "electric vehicle", "test drive"},
+	},
 }
 
 // Of returns the best-guess category for a document.
@@ -86,6 +154,12 @@ func Of(host, path, title, description string) string {
 	h := strings.ToLower(host)
 	p := strings.ToLower(path)
 	text := strings.ToLower(title + " " + description)
+
+	// x.com needs an exact-domain check: the bare substring "x.com" would also
+	// match every host that merely ends in "x.com" (roblox.com, nix.com, …).
+	if h == "x.com" || strings.HasSuffix(h, ".x.com") {
+		return "social"
+	}
 
 	for _, r := range rules {
 		for _, bit := range r.hostBits {

@@ -19,6 +19,22 @@ use tauri::{Emitter, Manager, State, WindowEvent};
 use engine::{EngineHandle, EngineInfo};
 use indexer::{IndexStats, SearchIndex, SearchParams, SearchResponse};
 
+/// Injected into every page before it renders. The window is created
+/// manually (see `create: false` in `tauri.conf.json`) so the webview can
+/// be locked down: DevTools off at the WebView2 level, no context menu to
+/// right-click "Inspect", and no DevTools/zoom hotkeys.
+const SHELL_HARDENING_SCRIPT: &str = r#"
+  (() => {
+    const swallow = (e) => { e.preventDefault(); e.stopPropagation(); };
+    document.addEventListener('contextmenu', swallow, true);
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'F12') return swallow(e);
+      if (e.ctrlKey && e.shiftKey && ['I', 'J', 'C', 'K'].includes(e.key.toUpperCase())) return swallow(e);
+      if (e.ctrlKey && e.key.toUpperCase() === 'U') return swallow(e);
+    }, true);
+  })();
+"#;
+
 /// Shared application state.
 struct AppState {
     engine: Arc<EngineHandle>,
@@ -110,6 +126,17 @@ pub fn run() {
         ])
         .setup(|app| {
             let handle = app.handle().clone();
+
+            // The window is built here (not by the config auto-creator) so
+            // the webview can be hardened against right-click Inspect and
+            // DevTools shortcuts.
+            if let Some(cfg) = app.config().app.windows.first() {
+                tauri::WebviewWindowBuilder::from_config(app.handle(), cfg)?
+                    .devtools(false)
+                    .zoom_hotkeys_enabled(false)
+                    .initialization_script(SHELL_HARDENING_SCRIPT)
+                    .build()?;
+            }
 
             let data = resolve_data_dir();
             std::fs::create_dir_all(&data)?;

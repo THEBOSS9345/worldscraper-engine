@@ -59,6 +59,7 @@ type M struct {
 
 	inflight  atomic.Int64
 	hostsLive atomic.Int64
+	deduped   atomic.Int64
 	startedAt time.Time
 
 	seq atomic.Uint64
@@ -80,6 +81,12 @@ func (m *M) DecInflight() { m.inflight.Add(-1) }
 
 // SetHostsLive records how many hosts currently hold queued work.
 func (m *M) SetHostsLive(n int64) { m.hostsLive.Store(n) }
+
+// AddDedup counts one document suppressed as a near duplicate.
+func (m *M) AddDedup() { m.deduped.Add(1) }
+
+// Deduped returns the total number of near-duplicate documents dropped.
+func (m *M) Deduped() int64 { return m.deduped.Load() }
 
 // Record files one completed fetch.
 func (m *M) Record(ev Event) {
@@ -118,6 +125,7 @@ type Rates struct {
 	BytesPerSec   float64 `json:"bytesPerSec"`
 	ErrorsPerSec  float64 `json:"errorsPerSec"`
 	PagesPerMin   float64 `json:"pagesPerMin"`
+	Deduped       int64   `json:"deduped"`
 	AvgLatencyMs  float64 `json:"avgLatencyMs"`
 	SuccessRate   float64 `json:"successRate"`
 	Inflight      int64   `json:"inflight"`
@@ -167,6 +175,7 @@ func (m *M) Rates(fast int) Rates {
 		ErrorsPerSec:  float64(fErr) / float64(fast),
 		BytesPerSec:   float64(fBytes) / float64(fast),
 		PagesPerMin:   float64(mPages),
+		Deduped:       m.deduped.Load(),
 		Inflight:      m.inflight.Load(),
 		HostsLive:     m.hostsLive.Load(),
 		UptimeSeconds: int64(time.Since(m.startedAt).Seconds()),

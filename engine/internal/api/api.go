@@ -8,10 +8,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
@@ -23,6 +25,7 @@ import (
 	"worldscraper/engine/internal/kv"
 	"worldscraper/engine/internal/meta"
 	"worldscraper/engine/internal/metrics"
+	"worldscraper/engine/internal/notify"
 )
 
 // Server wires the engine's components to HTTP handlers.
@@ -32,7 +35,10 @@ type Server struct {
 	met     *metrics.M
 	crawler *crawl.Crawler
 	geo     *geoip.DB
+	dataDir string
 	token   string
+
+	notifier *notify.Notifier
 
 	aggMu   sync.Mutex
 	aggVal  *Aggregates
@@ -45,8 +51,34 @@ type Server struct {
 }
 
 // New creates the API server. geo may be nil.
-func New(k *kv.DB, m *meta.DB, met *metrics.M, c *crawl.Crawler, geo *geoip.DB, token string) *Server {
-	return &Server{kvdb: k, metadb: m, met: met, crawler: c, geo: geo, token: token}
+func New(k *kv.DB, m *meta.DB, met *metrics.M, c *crawl.Crawler, geo *geoip.DB, dataDir, token string) *Server {
+	s := &Server{kvdb: k, metadb: m, met: met, crawler: c, geo: geo, dataDir: dataDir, token: token}
+	s.notifier = notify.New(func() config.Config { return c.Config() }, func() notify.Info {
+		return s.notifyInfo()
+	})
+	return s
+}
+
+// StartNotify launches the notification watchdog in the background. It is
+// harmless to call more than once; the notifier sweeps on its own ticker.
+func (s *Server) StartNotify(ctx context.Context) {
+	go s.notifier.Run(ctx)
+}
+
+// notifyInfo snapshots the data the notifier needs from live components.
+func (s *Server) notifyInfo() notify.Info {
+	r := s.met.Rates(60)
+	st := s.crawler.Status()
+	return notify.Info{
+		Rates: notify.Rates{
+			PagesPerSec:  r.PagesPerSec,
+			ErrorsPerSec: r.ErrorsPerSec,
+			SuccessRate:  r.SuccessRate,
+			PagesPerMin:  r.PagesPerMin,
+		},
+		Status: notify.Status{Running: st.Running, Paused: st.Paused, Workers: st.Workers},
+		DiskMB: int64(dirSize(s.dataDir)) / (1 << 20),
+	}
 }
 
 // Handler returns the fully wired HTTP handler.
@@ -178,10 +210,48 @@ type Snapshot struct {
 	Rates      metrics.Rates    `json:"rates"`
 	Status     crawl.Status     `json:"status"`
 	Frontier   FrontierStats    `json:"frontier"`
+	Storage    StorageStats     `json:"storage"`
 	Aggregates *Aggregates      `json:"agg"`
 	Spark      []int64          `json:"spark"`
 	Recent     []metrics.Event  `json:"recent"`
 	Now        int64            `json:"now"`
+}
+
+// StorageStats breaks down how much disk the crawl's data directory uses.
+type StorageStats struct {
+	FrontierBytes uint64 `json:"frontierBytes"` // Pebble frontier store
+	IndexBytes    uint64 `json:"indexBytes"`    // Tantivy search index
+	MetaBytes     uint64 `json:"metaBytes"`     // meta.db (+ wal/shm)
+	GeoBytes      uint64 `json:"geoBytes"`      // GeoLite mmdb
+	TotalBytes    uint64 `json:"totalBytes"`    // entire data directory
+}
+
+func (s *Server) storageStats() StorageStats {
+	meta := dirSize(filepath.Join(s.dataDir, "meta.db")) +
+		dirSize(filepath.Join(s.dataDir, "meta.db-wal")) +
+		dirSize(filepath.Join(s.dataDir, "meta.db-shm"))
+	geo := uint64(0)
+	if s.geo != nil {
+		geo = dirSize(s.geo.Path())
+	}
+	return StorageStats{
+		FrontierBytes: dirSize(filepath.Join(s.dataDir, "frontier")),
+		IndexBytes:    dirSize(filepath.Join(s.dataDir, "index")),
+		MetaBytes:     meta,
+		GeoBytes:      geo,
+		TotalBytes:    dirSize(s.dataDir),
+	}
+}
+
+func dirSize(path string) uint64 {
+	var total uint64
+	_ = filepath.Walk(path, func(_ string, fi os.FileInfo, err error) error {
+		if err == nil && !fi.IsDir() {
+			total += uint64(fi.Size())
+		}
+		return nil
+	})
+	return total
 }
 
 // FrontierStats describes queue and index-handoff depth.
@@ -211,6 +281,7 @@ func (s *Server) snapshot(seriesMinutes, recentN int) *Snapshot {
 		Rates:    s.met.Rates(10),
 		Status:   s.crawler.Status(),
 		Frontier: s.frontierStats(),
+		Storage:  s.storageStats(),
 		Aggregates: s.aggregates(seriesMinutes),
 		Spark:      s.met.Spark(60),
 		Recent:     s.met.Recent(recentN),
@@ -418,6 +489,14 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		message = "robots.txt cache cleared"
+
+	case "notifyTest":
+		go func() {
+			if err := s.notifier.Test(); err != nil {
+				log.Printf("[api] notify test: %v", err)
+			}
+		}()
+		message = "test alert sent to configured endpoints"
 
 	case "resetStats":
 		if err := s.crawler.ResetStats(); err != nil {

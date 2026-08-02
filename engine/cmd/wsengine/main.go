@@ -153,7 +153,7 @@ func run(dataDir, listen, token, seedsFile string, paused bool, parentPID int) e
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	apisrv := api.New(kvdb, metadb, met, crawler, geo, token)
+	apisrv := api.New(kvdb, metadb, met, crawler, geo, dataDir, token)
 	apisrv.OnShutdown = stop
 
 	srv := &http.Server{
@@ -180,6 +180,16 @@ func run(dataDir, listen, token, seedsFile string, paused bool, parentPID int) e
 	if parentPID > 0 {
 		go watchParent(ctx, parentPID, stop)
 	}
+
+	// Notification watchdog: checks the crawl health and disk usage once a
+	// minute and alerts the configured endpoints when something is wrong.
+	go func() {
+		cfg := crawler.Config()
+		if cfg.NotifyEnabled {
+			log.Printf("[engine] notifications enabled")
+		}
+	}()
+	apisrv.StartNotify(ctx)
 
 	<-ctx.Done()
 	log.Printf("[engine] shutting down")

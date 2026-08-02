@@ -15,6 +15,8 @@ import (
 	"time"
 
 	_ "modernc.org/sqlite"
+
+	"worldscraper/engine/internal/simhash"
 )
 
 const schema = `
@@ -67,6 +69,31 @@ CREATE TABLE IF NOT EXISTS totals (
   k TEXT PRIMARY KEY,
   v INTEGER NOT NULL DEFAULT 0
 ) WITHOUT ROWID;
+
+-- Near-duplicate suppression. One row per indexed URL holding the 64-bit
+-- SimHash of its text plus the eight 8-bit bands, so copies of the same page
+-- (syndication, mirrors) index only once.
+CREATE TABLE IF NOT EXISTS fingerprints (
+  url   TEXT    PRIMARY KEY,
+  fp    INTEGER NOT NULL,
+  b0    INTEGER NOT NULL,
+  b1    INTEGER NOT NULL,
+  b2    INTEGER NOT NULL,
+  b3    INTEGER NOT NULL,
+  b4    INTEGER NOT NULL,
+  b5    INTEGER NOT NULL,
+  b6    INTEGER NOT NULL,
+  b7    INTEGER NOT NULL,
+  seen  INTEGER NOT NULL
+) WITHOUT ROWID;
+CREATE INDEX IF NOT EXISTS fingerprints_b0_idx ON fingerprints(b0);
+CREATE INDEX IF NOT EXISTS fingerprints_b1_idx ON fingerprints(b1);
+CREATE INDEX IF NOT EXISTS fingerprints_b2_idx ON fingerprints(b2);
+CREATE INDEX IF NOT EXISTS fingerprints_b3_idx ON fingerprints(b3);
+CREATE INDEX IF NOT EXISTS fingerprints_b4_idx ON fingerprints(b4);
+CREATE INDEX IF NOT EXISTS fingerprints_b5_idx ON fingerprints(b5);
+CREATE INDEX IF NOT EXISTS fingerprints_b6_idx ON fingerprints(b6);
+CREATE INDEX IF NOT EXISTS fingerprints_b7_idx ON fingerprints(b7);
 `
 
 // DB holds a single-writer connection plus a small read pool.
@@ -133,6 +160,10 @@ type Delta struct {
 	Langs      map[string]int64
 	Countries  map[string]int64
 
+	// Fingerprints upserted alongside the aggregates: one row per indexed URL,
+	// used for near-duplicate suppression.
+	Fingerprints map[string]uint64
+
 	Pages  int64
 	Bytes  int64
 	Errors int64
@@ -145,17 +176,19 @@ type Delta struct {
 // NewDelta returns an empty delta bucket.
 func NewDelta() *Delta {
 	return &Delta{
-		Hosts:      make(map[string]*HostDelta),
-		Categories: make(map[string]int64),
-		Statuses:   make(map[int]int64),
-		Langs:      make(map[string]int64),
-		Countries:  make(map[string]int64),
+		Hosts:        make(map[string]*HostDelta),
+		Categories:   make(map[string]int64),
+		Statuses:     make(map[int]int64),
+		Langs:        make(map[string]int64),
+		Countries:    make(map[string]int64),
+		Fingerprints: make(map[string]uint64),
 	}
 }
 
 // Empty reports whether there is nothing to write.
 func (d *Delta) Empty() bool {
-	return d.Pages == 0 && d.Errors == 0 && d.Links == 0 && d.Fetch == 0 && len(d.Hosts) == 0
+	return d.Pages == 0 && d.Errors == 0 && d.Links == 0 && d.Fetch == 0 &&
+		len(d.Hosts) == 0 && len(d.Fingerprints) == 0
 }
 
 // Host returns (creating if needed) the accumulator for a host.
@@ -207,6 +240,28 @@ func (d *DB) Apply(dl *Delta) error {
 		if _, err := hostStmt.Exec(host, h.Site, h.Pages, h.Errors, h.Bytes, h.Category, now, last); err != nil {
 			return err
 		}
+	}
+
+	if len(dl.Fingerprints) > 0 {
+		fpStmt, err := tx.Prepare(`INSERT INTO fingerprints(url, fp, b0, b1, b2, b3, b4, b5, b6, b7, seen)
+			VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(url) DO UPDATE SET
+				fp = excluded.fp,
+				b0 = excluded.b0, b1 = excluded.b1, b2 = excluded.b2, b3 = excluded.b3,
+				b4 = excluded.b4, b5 = excluded.b5, b6 = excluded.b6, b7 = excluded.b7,
+				seen = excluded.seen`)
+		if err != nil {
+			return err
+		}
+		for url, fp := range dl.Fingerprints {
+			bands := simhash.Bands(fp)
+			if _, err := fpStmt.Exec(url, int64(fp), bands[0], bands[1], bands[2], bands[3],
+				bands[4], bands[5], bands[6], bands[7], now); err != nil {
+				fpStmt.Close()
+				return err
+			}
+		}
+		fpStmt.Close()
 	}
 
 	if err := bumpMap(tx, `INSERT INTO categories(category, pages) VALUES(?, ?)
@@ -505,6 +560,75 @@ func (d *DB) PutJSON(k string, v any) error {
 	defer d.mu.Unlock()
 	_, err = d.w.Exec(`INSERT INTO settings(k, v) VALUES(?, ?)
 		ON CONFLICT(k) DO UPDATE SET v = excluded.v`, k, string(raw))
+	return err
+}
+
+// --------------------------------------------------------- fingerprints --
+
+// RecordFingerprint upserts the SimHash of one indexed URL. Banded LSH
+// columns let near-duplicate lookups hit an index instead of scanning.
+func (d *DB) RecordFingerprint(url string, fp uint64) error {
+	bands := simhash.Bands(fp)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.w.Exec(`INSERT INTO fingerprints(url, fp, b0, b1, b2, b3, b4, b5, b6, b7, seen)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(url) DO UPDATE SET
+			fp = excluded.fp,
+			b0 = excluded.b0, b1 = excluded.b1, b2 = excluded.b2, b3 = excluded.b3,
+			b4 = excluded.b4, b5 = excluded.b5, b6 = excluded.b6, b7 = excluded.b7,
+			seen = excluded.seen`,
+		url, int64(fp), bands[0], bands[1], bands[2], bands[3],
+		bands[4], bands[5], bands[6], bands[7], time.Now().Unix())
+	return err
+}
+
+// HasNearDuplicate reports whether any *other* URL carries a fingerprint within
+// the near-duplicate threshold of fp. The URL's own row is excluded so a
+// recrawl of the same page is never suppressed by itself.
+func (d *DB) HasNearDuplicate(url string, fp uint64) (bool, error) {
+	if fp == 0 {
+		return false, nil
+	}
+	bands := simhash.Bands(fp)
+	rows, err := d.r.Query(`SELECT url, fp FROM fingerprints
+		WHERE url != ? AND (b0 = ? OR b1 = ? OR b2 = ? OR b3 = ?
+			OR b4 = ? OR b5 = ? OR b6 = ? OR b7 = ?)
+		LIMIT 256`, url, bands[0], bands[1], bands[2], bands[3],
+		bands[4], bands[5], bands[6], bands[7])
+	if err != nil {
+		return false, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var (
+			other   string
+			otherFP int64
+		)
+		if err := rows.Scan(&other, &otherFP); err != nil {
+			return false, err
+		}
+		_ = other
+		if simhash.Distance(fp, uint64(otherFP)) <= simhash.NearThreshold {
+			return true, nil
+		}
+	}
+	return false, rows.Err()
+}
+
+// FingerprintCount reports how many URLs carry fingerprints.
+func (d *DB) FingerprintCount() (int, error) {
+	var n int
+	err := d.r.QueryRow(`SELECT COUNT(*) FROM fingerprints`).Scan(&n)
+	return n, err
+}
+
+// DropFingerprint removes one URL's fingerprint (used when its indexed copy
+// is pruned).
+func (d *DB) DropFingerprint(url string) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	_, err := d.w.Exec(`DELETE FROM fingerprints WHERE url = ?`, url)
 	return err
 }
 

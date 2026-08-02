@@ -71,6 +71,10 @@ type Doc struct {
 	Bytes       int64  `json:"bytes"`
 	Depth       int    `json:"depth"`
 	FetchedAt   int64  `json:"fetchedAt"`
+	// Fp is a 64-bit SimHash of the page text. The indexer uses it to detect
+	// near-duplicate pages and index only the first of each cluster. Zero means
+	// the page had no extractable text.
+	Fp uint64 `json:"fp,omitempty"`
 }
 
 // Completion reports the outcome of one leased item.
@@ -248,6 +252,7 @@ func (d *DB) Enqueue(items []Item) (int, error) {
 }
 
 // Requeue puts a known URL back into the pending queue (used by recrawl).
+// Already-seen work is pinned to the back of the queue so fresh URLs win.
 func (d *DB) Requeue(items []Item) error {
 	if len(items) == 0 {
 		return nil
@@ -255,7 +260,7 @@ func (d *DB) Requeue(items []Item) error {
 	b := d.p.NewBatch()
 	defer b.Close()
 	for _, it := range items {
-		if err := d.pushLocked(b, it); err != nil {
+		if err := d.pushLockedAt(b, it, 255); err != nil {
 			return err
 		}
 		st, _ := json.Marshal(urlState{S: StatePending})
@@ -270,15 +275,23 @@ func (d *DB) Requeue(items []Item) error {
 	return nil
 }
 
-// pushLocked writes one queue entry. Queue keys are
-// q/<priority><random><seq>: priority is crawl depth so the crawl is
-// breadth-first, and the random bytes shuffle same-depth URLs so a single
-// page's outlinks do not arrive as one host-dominated run.
+// pushLocked writes one queue entry for a fresh URL. Priority is crawl depth so
+// the crawl is breadth-first, and the random bytes shuffle same-depth URLs so a
+// single page's outlinks do not arrive as one host-dominated run.
 func (d *DB) pushLocked(b *pebble.Batch, it Item) error {
 	pri := byte(255)
 	if it.Depth >= 0 && it.Depth < 255 {
 		pri = byte(it.Depth)
 	}
+	return d.pushLockedAt(b, it, pri)
+}
+
+// pushLockedAt writes one queue entry at an explicit priority. Queue keys are
+// q/<priority><random><seq> with ascending order leased first, so lower bytes
+// win. Fresh URLs sort by depth; anything for a URL that has already been seen
+// (recrawls, retries, and the startup sweep of in-flight leases) is pinned to
+// 255 so brand-new domains are always fetched before already-known ones.
+func (d *DB) pushLockedAt(b *pebble.Batch, it Item, pri byte) error {
 	d.rndMu.Lock()
 	jitter := uint16(d.rnd.Intn(1 << 16))
 	d.rndMu.Unlock()
@@ -362,7 +375,8 @@ func (d *DB) Complete(cs []Completion) (newLinks int, err error) {
 		}
 		if c.Retry {
 			// Leave the seen-state as pending and re-queue the same item.
-			if err := d.pushLocked(b, c.Item); err != nil {
+			// Failed work is already known, so it waits behind fresh URLs.
+			if err := d.pushLockedAt(b, c.Item, 255); err != nil {
 				return 0, err
 			}
 			pendingAdd++
@@ -434,7 +448,7 @@ func (d *DB) SweepLeases() (int, error) {
 	for iter.First(); iter.Valid(); iter.Next() {
 		var it Item
 		if err := json.Unmarshal(iter.Value(), &it); err == nil {
-			if err := d.pushLocked(b, it); err != nil {
+			if err := d.pushLockedAt(b, it, 255); err != nil {
 				return n, err
 			}
 			n++

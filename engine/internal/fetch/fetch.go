@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptrace"
 	"strings"
 	"sync"
@@ -97,14 +98,30 @@ func New(o Options) *Client {
 			// so certificate problems are treated as a content-quality issue
 			// rather than a security boundary. Toggleable in config.
 			InsecureSkipVerify: o.InsecureTLS,
-			MinVersion:         tls.VersionTLS10,
+			// Offer only modern protocol versions; advertising TLS 1.0/1.1 is a
+			// fingerprint no real browser has had for years.
+			MinVersion: tls.VersionTLS12,
+			// Mirror Chrome's TLS 1.2 cipher suite preference order.
+			CipherSuites: []uint16{
+				tls.TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256,
+				tls.TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384,
+				tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
+				tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
+			},
+			CurvePreferences: []tls.CurveID{
+				tls.X25519, tls.CurveP256, tls.CurveP384,
+			},
 		},
 	}
 
 	c := &Client{opts: o}
 	c.hc = &http.Client{
 		Transport: tr,
-		Timeout:   o.Timeout,
+		// A browser returns a Set-Cookie and sends it back; so do we.
+		Jar:     newCookieJar(),
+		Timeout: o.Timeout,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
 			if len(via) >= o.MaxRedirects {
 				return fmt.Errorf("stopped after %d redirects", o.MaxRedirects)
@@ -113,6 +130,13 @@ func New(o Options) *Client {
 		},
 	}
 	return c
+}
+
+// newCookieJar returns a shared, domain-scoped cookie jar so each host keeps
+// whatever session state it set, like a browser tab would.
+func newCookieJar() http.CookieJar {
+	jar, _ := cookiejar.New(nil)
+	return jar
 }
 
 // Get fetches a URL. htmlOnly makes it abandon non-HTML responses after the
@@ -143,11 +167,23 @@ func (c *Client) Get(ctx context.Context, url string, htmlOnly bool) (*Response,
 		},
 	}))
 	req.Header.Set("User-Agent", c.opts.UserAgent)
-	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.6")
-	req.Header.Set("Accept-Language", "en;q=0.9,*;q=0.5")
-	// Deliberately no Accept-Encoding: net/http only decompresses responses
-	// transparently when it added the header itself. Setting it by hand hands
-	// back raw gzip bytes.
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+	// The sec-ch-ua / sec-fetch-* / upgrade-insecure-requests trio is sent by
+	// every modern browser navigation. Its absence is a strong bot signal.
+	req.Header.Set("Sec-Ch-Ua", `"Chromium";v="126", "Google Chrome";v="126", "Not-A.Brand";v="99"`)
+	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
+	req.Header.Set("Sec-Ch-Ua-Platform", `"Windows"`)
+	req.Header.Set("Sec-Fetch-Dest", "document")
+	req.Header.Set("Sec-Fetch-Mode", "navigate")
+	req.Header.Set("Sec-Fetch-Site", "none")
+	req.Header.Set("Sec-Fetch-User", "?1")
+	req.Header.Set("Upgrade-Insecure-Requests", "1")
+	req.Header.Set("Cache-Control", "max-age=0")
+	// Deliberately no Referer: these are top-level navigations (Sec-Fetch-Site
+	// none), which browsers send bare. Accept-Encoding is left to net/http:
+	// it adds "gzip" itself and decompresses transparently, whereas a manual
+	// header would hand back raw compressed bytes.
 
 	resp, err := c.hc.Do(req)
 	if err != nil {

@@ -14,6 +14,7 @@ export interface Rates {
   bytesPerSec: number;
   errorsPerSec: number;
   pagesPerMin: number;
+  deduped: number;
   avgLatencyMs: number;
   successRate: number;
   inflight: number;
@@ -56,7 +57,8 @@ export type ControlAction =
   | "clearRobots"
   | "resetStats"
   | "clearSeen"
-  | "compact";
+  | "compact"
+  | "notifyTest";
 
 export interface CountRow {
   label: string;
@@ -119,10 +121,19 @@ export interface Snapshot {
   rates: Rates;
   status: CrawlStatus;
   frontier: FrontierStats;
+  storage: StorageStats;
   agg: Aggregates;
   spark: number[];
   recent: CrawlEvent[];
   now: number;
+}
+
+export interface StorageStats {
+  frontierBytes: number;
+  indexBytes: number;
+  metaBytes: number;
+  geoBytes: number;
+  totalBytes: number;
 }
 
 export interface EngineConfig {
@@ -139,6 +150,9 @@ export interface EngineConfig {
   insecureTls: boolean;
   recrawlAfterHours: number;
   reseedWhenDry: boolean;
+  perHostDailyCap: number;
+  pruneOlderThanDays: number;
+  dedupNearDuplicates: boolean;
   crawlAdult: boolean;
   onlyHtml: boolean;
   paused: boolean;
@@ -146,6 +160,18 @@ export interface EngineConfig {
   discoveryIntervalMin: number;
   discoveryMaxPerCycle: number;
   discoverySources: string[];
+  discoverySitemapEnabled: boolean;
+  discoverySitemapHosts: number;
+  discoveryMaxSitemapFetches: number;
+  notifyEnabled: boolean;
+  notifyWebhook: string;
+  notifyDiscord: string;
+  notifyTelegramBot: string;
+  notifyTelegramChat: string;
+  notifyOnStall: boolean;
+  notifyOnErrors: boolean;
+  notifyOnDisk: boolean;
+  notifyDiskThresholdMb: number;
 }
 
 export interface EngineInfo {
